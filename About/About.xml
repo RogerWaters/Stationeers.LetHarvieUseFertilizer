@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetadata xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Name>LetHarvieUseFertilizer</Name>
+  <Author>Grilled_Salmon</Author>
+  <Version>0.2.2582.12315_v0.1</Version>
+  <Description>WARNING: This mod will not work, unless you install Stationeers.Addon mod loader.
+Read how to install it here: https://github.com/Erdroy/Stationeers.Addons
+---
+
+An addon that allows Harvie to use fertilizer placed in its import slot.</Description>
+  <Tags />
+</ModMetadata>
