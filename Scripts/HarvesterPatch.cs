@@ -1,204 +1,144 @@
-﻿using Assets.Scripts.Objects;
-using HarmonyLib;
-using System;
-using UnityEngine;
-using Assets.Scripts.Objects.Electrical;
-using Assets.Scripts.Networking;
-using System.Reflection;
-using System.Collections.Generic;
+﻿using HarmonyLib;
 using Assets.Scripts;
 using Assets.Scripts.Util;
 using Assets.Scripts.Objects.Chutes;
-using Assets.Scripts.Objects.Items;
 using Assets.Scripts.Objects.Pipes;
+using Assets.Scripts.Genetics;
+using UnityEngine;
+using Logger = BepInEx.Logging.Logger;
+using Plant = Assets.Scripts.Objects.Items.Plant;
 
 namespace LetHarvieUseFertilizer.Scripts
 {
 	[HarmonyPatch(typeof(Harvester))]
 	public class HarvesterPatch
-	{
-		public static bool GetIsTray(Harvester harvester)
-		{
-			return (harvester.HydroponicTray != null) ? harvester.HydroponicTray.GetThing : null;
-		}
-
-		public static bool GetIsHarvesting(Harvester harvester)
-        {
-			bool isHarvesting = false;
-			try
-			{
-				var harvesterType = typeof(Harvester);
-				var harvesterField = harvesterType.GetField("_isHarvesting", BindingFlags.NonPublic | BindingFlags.Instance);
-				isHarvesting = (bool)harvesterField.GetValue(harvester);
-			}
-			catch(Exception ex)
-            {
-				Debug.LogError(LetHarvieUseFertilizer.ModName + ": Could not get _isHarvesting via Reflection of Harvester: " + ex.Message);
-            }
-			return isHarvesting;
-		}
-
-		public static bool GetIsPlanting(Harvester harvester)
-		{
-			bool isPlanting = false;
-			try
-			{
-				var harvesterType = typeof(Harvester);
-				var harvesterField = harvesterType.GetField("_isPlanting", BindingFlags.NonPublic | BindingFlags.Instance);
-				isPlanting = (bool)harvesterField.GetValue(harvester);
-			}
-			catch (Exception ex)
-			{
-				Debug.LogError(LetHarvieUseFertilizer.ModName + ": Could not get _isPlanting via Reflection of Harvester: " + ex.Message);
-			}
-			return isPlanting;
-		}
+    {
+        private static readonly Traverse TryPlantSeeds = 
+            Traverse.Create<Harvester>().Method("TryPlantSeed");
 
 		[HarmonyPatch("TryPlantSeed")]
 		[HarmonyPrefix]
-		public static bool TryPlantSeed(Harvester __instance, ref bool __result)
+		public static bool TryPlantSeed(Harvester __instance, ref bool __result, bool ____isHarvesting, bool ____isPlanting)
 		{
-			bool flag = !GameManager.IsServer;
-			bool result;
-			if (flag)
-			{
-				result = false;
-			}
-			else
-			{
-				bool flag2 = !__instance.Powered || !__instance.OnOff;
-				if (flag2)
-				{
-					result = false;
-				}
-				else
-				{
-					bool isThread = GameManager.IsThread;
-					if (isThread)
-					{
-						UnityMainThreadDispatcher.Instance().Enqueue(delegate ()
-						{
-							__instance.TryPlantSeed();
-						});
-						result = true;
-					}
-					else
-					{
-						bool flag3 = (ArmControl)__instance.Activate == ArmControl.Idle || (!GetIsHarvesting(__instance) && !GetIsPlanting(__instance));
-						if (flag3)
-						{
-							Plant importPlant = __instance.ImportingThing as Plant;
-							bool flag4 = importPlant != null && importPlant.OnUseItem(1f, __instance.ImportingThing as Plant);
-							if (flag4)
-							{
-								Seed seed = __instance.ImportingThing as Seed;
-								bool flag5 = seed != null;
-								DynamicThing childThing;
-								if (flag5)
-								{
-									childThing = OnServer.Create(seed.PlantType, __instance.ThingTransform.position, __instance.ThingTransform.rotation, __instance.OwnerSteamId, null);
-								}
-								else
-								{
-									childThing = OnServer.Create(__instance.ImportingThing.Prefab as Plant, __instance.ThingTransform.position, __instance.ThingTransform.rotation, __instance.OwnerSteamId, null);
-								}
-								OnServer.MoveToSlot(childThing, __instance.GetRobotHandSlot);
-							}
-							Fertiliser importFertilizer = __instance.ImportingThing as Fertiliser;
-							bool flag6 = importFertilizer != null && importFertilizer.OnUseItem(1f, __instance.ImportingThing as Fertiliser);
-							if (flag6)
-							{
-								Fertiliser fert = __instance.ImportingThing as Fertiliser;
-								bool flag7 = fert != null;
-								DynamicThing childThing;
-								if (flag7)
-								{
-									childThing = OnServer.Create(fert, __instance.ThingTransform.position, __instance.ThingTransform.rotation, __instance.OwnerSteamId, null);
-								}
-                                else 
-								{
-									childThing = OnServer.Create(__instance.ImportingThing.Prefab as Fertiliser, __instance.ThingTransform.position, __instance.ThingTransform.rotation, __instance.OwnerSteamId, null);
-								}
-								OnServer.MoveToSlot(childThing, __instance.GetRobotHandSlot);
-							}
-							OnServer.Interact(__instance.InteractActivate, 1, false);
-							result = true;
-						}
-						else
-						{
-							result = false;
-						}
-					}
-				}
-			}
-			__result = result;
+            if (!GameManager.RunSimulation || !__instance.Powered || !__instance.OnOff)
+            {
+                __result = false;
+                return false; // skip original method
+            }
+            if (GameManager.IsThread)
+            {
+                var tryPlantSeed = Traverse.Create(__instance).Method("TryPlantSeed");
+                UnityMainThreadDispatcher.Instance()
+                    .Enqueue(() => tryPlantSeed.GetValue());
+                __result = true;
+                return false; // skip original method
+            }
 
-			return false; // skip original method
-		}
+            var currentState = (ArmControl)__instance.Activate;
+            if (currentState != ArmControl.Idle && (____isHarvesting || ____isPlanting))
+            {
+                __result = false;
+                return false; // skip original method
+            }
+            var robotHandSlot = __instance.Slots[2];
+            if (__instance.ImportingThing is Plant importPlant)
+            {
+                GeneCollection genes =
+                    GameManager.RunSimulation ?
+                        GeneCollection.Copy(importPlant.Genes) :
+                        null;
+                if (importPlant.OnUseItem(1f, importPlant))
+                {
+                    Plant plant;
+                    if (!(importPlant is Seed seed))
+                    {
+                        plant = OnServer.Create<Plant>(importPlant.SourcePrefab, robotHandSlot);
+                    }
+                    else
+                    {
+                        plant = OnServer.Create<Plant>(seed.PlantType, robotHandSlot);
+                    }
+                    if (plant)
+                    {
+                        plant.ApplySeedTraits(genes);
+                    }
+                }
+            }
+            if (__instance.ImportingThing is Fertiliser fertilizer)
+            {
+                if (fertilizer.OnUseItem(1f, fertilizer))
+                {
+                    OnServer.Create<Fertiliser>(fertilizer.SourcePrefab, robotHandSlot);
+                }
+            }
+
+            OnServer.Interact(__instance.InteractActivate, 1);
+            __result = true;
+
+            return false; // skip original method
+        }
 
 		[HarmonyPatch("OnArmPlant")]
 		[HarmonyPrefix]
-		public static bool OnArmPlant(Harvester __instance)
-		{
-			Plant plant;
-			Fertiliser fert;
-			if (GameManager.IsServer)
-			{
-				plant = (__instance.GetRobotHandSlot.Occupant as Plant);
-			}
-			else
-			{
-				plant = null;
-			}
-			if (plant != null)
-			{
-				plant.NetworkQuantity = 1;
-				bool flag3 = !GetIsTray(__instance) || __instance.HydroponicTray.IsBeingDestroyed;
-				if (flag3)
-				{
-					OnServer.MoveToWorld(plant);
-				}
-				else
-				{
-					OnServer.MoveToSlot(plant, __instance.HydroponicTray.InputSlot);
-				}
-			}
-			if (GameManager.IsServer)
-			{
-				fert = (__instance.GetRobotHandSlot.Occupant as Fertiliser);
-			}
-			else
-			{
-				fert = null;
-			}
-			if (fert != null)
-			{
-				fert.NetworkQuantity = 1;
-				bool flag3 = !GetIsTray(__instance) || __instance.HydroponicTray.IsBeingDestroyed;
-				if (flag3)
-				{
-					OnServer.MoveToWorld(fert);
-				}
-				else
-				{
-					HydroponicTray tray = __instance.HydroponicTray as HydroponicTray;
-					HydroponicsTrayDevice device = __instance.HydroponicTray as HydroponicsTrayDevice;
-					if (tray != null)
-                    {
-						OnServer.MoveToSlot(fert, (__instance.HydroponicTray as HydroponicTray).InputSlot1);
-					}
-					else if (device != null)
-                    {
-						OnServer.MoveToSlot(fert, (__instance.HydroponicTray as HydroponicsTrayDevice).InputSlot1);
-					}
-					else
-                    {
-						Debug.LogError(LetHarvieUseFertilizer.ModName + ": Could not get HydroponicTray slot1 of Harvester");
-					}	
-				}
-			}
+		public static bool OnArmPlant(Harvester __instance, IHarvestable ____hydroponicTray)
+        {
+            if (!GameManager.RunSimulation)
+            {
+                return false;
+            }
+            var robotHandSlot = __instance.Slots[2];
+            var thing = robotHandSlot.Get();
+            var plantOccupant = thing as Plant;
+            var fertilizerOccupant = thing as Fertiliser;
 
-			return false; // skip original method
+            if (!(plantOccupant) && !(fertilizerOccupant))
+            {
+                return false;
+            }
+
+            thing.SetQuantity(1);
+            if (____hydroponicTray.IsBeingDestroyed)
+            {
+                OnServer.MoveToWorld(thing);
+                return false;
+            }
+            if (fertilizerOccupant)
+            {
+                if (____hydroponicTray is HydroponicTray tray)
+                {
+                    if (tray.InputSlot1.Get())
+                    {
+                        OnServer.MoveToWorld(thing);
+                        return false;
+                    }
+                    OnServer.MoveToSlot(thing, tray.InputSlot1);
+                } 
+                else if (____hydroponicTray is HydroponicsTrayDevice trayDevice)
+                {
+                    if (trayDevice.InputSlot1.Get())
+                    {
+                        OnServer.MoveToWorld(thing);
+                        return false;
+                    }
+                    OnServer.MoveToSlot(thing, trayDevice.InputSlot1);
+                }
+                else
+                {
+                    OnServer.MoveToWorld(thing);
+                }
+            }
+            else if (plantOccupant)
+            {
+                if (____hydroponicTray.InputSlot.Get())
+                {
+                    OnServer.MoveToWorld(thing); 
+                    return false;
+                }
+                plantOccupant.PlanterName = ____hydroponicTray is IGrower hydroponicTray ? hydroponicTray.CustomName : (string)null;
+                OnServer.MoveToSlot(thing, ____hydroponicTray.InputSlot);
+            }
+
+            return false;
 		}
 	}
 }
